@@ -31,6 +31,9 @@ async Task HandleClient(Socket socket)
 
     if (command == "PING")
       await socket.SendAsync(Encoding.UTF8.GetBytes("+PONG\r\n"));
+
+    else if (command == "ECHO")
+      await socket.SendAsync(Encoding.UTF8.GetBytes($"+{commands[2]}\r\n"));
   }
 
 }
