@@ -39,12 +39,8 @@ async Task HandleClient(Socket socket)
 
     else if (command == "SET")
     {
-      long? ExpireAt = null;
-      if (query.Length > 5 && query[4].Equals("px", StringComparison.OrdinalIgnoreCase))
-        ExpireAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + Convert.ToInt64(query[5]);
-
       string key = query[2];
-      _db[key] = new RedisValue(RedisType.String, query[3], ExpireAt);
+      _db[key] = new RedisValue(RedisType.String, query[3], query);
       await socket.SendAsync(Encoding.UTF8.GetBytes("+OK\r\n"));
     }
     else if (command == "GET")
@@ -61,15 +57,11 @@ async Task HandleClient(Socket socket)
       string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
-        long? ExpireAt = null;
-        if (query.Length > 5 && query[4].Equals("px", StringComparison.OrdinalIgnoreCase))
-          ExpireAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + Convert.ToInt64(query[5]);
-
         var list = new List<string>();
         for (int i = 3; i < query.Length; ++i)
           list.Add(query[i]);
 
-        _db[key] = new RedisValue(RedisType.List, list, ExpireAt);
+        _db[key] = new RedisValue(RedisType.List, list);
         await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
       }
       else
@@ -93,5 +85,15 @@ public sealed record RedisValue(
   long? ExpireAtMs
 )
 {
+  public RedisValue(RedisType Type, object? Data, string[]? query = null)
+  : this(Type, Data, GetExpiryTime(query)) { }
+
   public bool IsExpired() => ExpireAtMs is long && ExpireAtMs <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+  public static long? GetExpiryTime(string[]? query)
+  {
+    if (query is null) return null;
+    if (query.Length > 5 && query[4].Equals("PX", StringComparison.OrdinalIgnoreCase))
+      return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + Convert.ToInt64(query[5]);
+    return null;
+  }
 };
