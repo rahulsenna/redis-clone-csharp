@@ -72,8 +72,30 @@ async Task HandleClient(Socket socket)
           list.Add(query[i]);
         await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
       }
-
     }
+    else if (command == "LRANGE")
+    {
+      string key = query[2];
+      if (!_db.TryGetValue(key, out var value))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
+        continue;
+      }
+
+      if (value.Data is not List<string> list) continue;
+
+      int beg = Convert.ToInt32(query[3]);
+      int end = Math.Min(Convert.ToInt32(query[4]), list.Count - 1);
+      beg = beg < 0 ? Math.Max(0, list.Count + beg) : beg;
+      end = end < 0 ? Math.Max(0, list.Count + end) : end;
+
+      StringBuilder Result = new();
+      for (int i = beg; i <= end; ++i)
+        Result.Append($"${list[i].Length}\r\n{list[i]}\r\n");
+
+      await socket.SendAsync(Encoding.UTF8.GetBytes($"*{end - beg + 1}\r\n{Result}"));
+    }
+
   }
 }
 
