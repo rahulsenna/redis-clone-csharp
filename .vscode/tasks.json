@@ -1,0 +1,100 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "codecrafter",
+            "command": "make",
+            "args": [
+                "test_all_with_redis"
+            ],
+            "options": {
+                "cwd": "/Users/agentofchaos/dev/testers-codecrafters-io/redis-tester"
+            },
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": "**/*.txt"
+            },
+            "presentation": {
+                "echo": true,
+                "focus": true,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true
+            }
+        },
+        {
+            "type": "shell",
+            "label": "codecrafter test",
+            "command": "pkill",
+            "args": [
+                "-9", "codecrafters-redis.csproj"
+            ],
+            
+            "group": {
+                "kind": "build",
+                "isDefault": "**/*.txt"
+            },
+            "presentation": {
+                "echo": true,
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true,
+                "reveal": "never"
+            },
+            "dependsOn": ["codecrafter"]
+            
+        },
+        {
+            "type": "shell",
+            "label": "kill",
+            "command": "pkill",
+            "args": [
+                "-9", "codecrafters-redis.csproj"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": "**/*.txt"
+            },
+            "presentation": {
+                "echo": true,
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": true,
+                "reveal": "never"
+            }            
+        },
+        {
+            "type": "dotnet",
+            "task": "build",
+            "group": "build",
+            "problemMatcher": [],
+            "label": "dotnet: build"
+        },
+        {
+            "type": "dotnet",
+            "task": "watch codecrafters-redis.csproj",
+            "file": "/Users/agentofchaos/dev/codecrafters-projects/bittorrent-csharp/codecrafters-redis.csproj.csproj",
+            "problemMatcher": [],
+            "label": "dotnet: watch codecrafters-redis.csproj",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "type": "msbuild",
+            "problemMatcher": [
+                "$msCompile"
+            ],
+            "group": "build",
+            "label": "Build: codecrafters-redis.csproj.csproj",
+            "detail": "Build the codecrafters-redis.csproj.csproj project using dotnet build"
+        }
+    ]
+}
