@@ -7,14 +7,15 @@ using System.Text;
 const int DEFAULT_BUFFER_SIZE = 1024;
 
 TcpListener server = new(IPAddress.Any, 6379);
+// server.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+// server.ExclusiveAddressUse = false;
 server.Start();
 ConcurrentDictionary<string, RedisValue> _db = [];
 while (true)
 {
   Socket socket = await server.AcceptSocketAsync();
-  // _ = HandleClient(socket);
-  _ = Task.Run(() => HandleClient(socket));
-
+  _ = HandleClient(socket);
+  // _ = Task.Run(() => HandleClient(socket));
 }
 
 async Task HandleClient(Socket socket)
@@ -55,10 +56,36 @@ async Task HandleClient(Socket socket)
       else
         await socket.SendAsync(Encoding.UTF8.GetBytes($"+{value.Data as string}\r\n"));
     }
+    else if (command == "RPUSH")
+    {
+      string key = query[2];
+      if (!_db.TryGetValue(key, out var value))
+      {
+        long? ExpireAt = null;
+        if (query.Length > 5 && query[4].Equals("px", StringComparison.OrdinalIgnoreCase))
+          ExpireAt = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + Convert.ToInt64(query[5]);
+
+        var list = new List<string>();
+        for (int i = 3; i < query.Length; ++i)
+          list.Add(query[i]);
+
+        _db[key] = new RedisValue(RedisType.List, list, ExpireAt);
+        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+      }
+      else
+      {
+        if (value.Data is not List<string> list) continue;
+
+        for (int i = 3; i < query.Length; ++i)
+          list.Add(query[i]);
+        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+      }
+
+    }
   }
 }
 
-public enum RedisType { None, String }
+public enum RedisType { None, String, List }
 
 public sealed record RedisValue(
   RedisType Type,
