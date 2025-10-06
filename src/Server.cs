@@ -57,19 +57,44 @@ async Task HandleClient(Socket socket)
       string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
-        var list = new List<string>();
+        var list = new LinkedList<string>();
         for (int i = 3; i < query.Length; ++i)
-          list.Add(query[i]);
+          list.AddLast(query[i]);
 
         _db[key] = new RedisValue(RedisType.List, list);
         await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
       }
       else
       {
-        if (value.Data is not List<string> list) continue;
-
+        if (value.Data is not LinkedList<string> list) continue;
+        lock (list)
+        {
+          for (int i = 3; i < query.Length; ++i)
+            list.AddLast(query[i]);
+        }
+        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+      }
+    }
+    else if (command == "LPUSH")
+    {
+      string key = query[2];
+      if (!_db.TryGetValue(key, out var value))
+      {
+        var list = new LinkedList<string>();
         for (int i = 3; i < query.Length; ++i)
-          list.Add(query[i]);
+          list.AddFirst(query[i]);
+
+        _db[key] = new RedisValue(RedisType.List, list);
+        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+      }
+      else
+      {
+        if (value.Data is not LinkedList<string> list) continue;
+        lock (list)
+        {
+          for (int i = 3; i < query.Length; ++i)
+            list.AddFirst(query[i]);
+        }
         await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
       }
     }
@@ -82,7 +107,7 @@ async Task HandleClient(Socket socket)
         continue;
       }
 
-      if (value.Data is not List<string> list) continue;
+      if (value.Data is not LinkedList<string> list) continue;
 
       int beg = Convert.ToInt32(query[3]);
       int end = Math.Min(Convert.ToInt32(query[4]), list.Count - 1);
@@ -90,8 +115,8 @@ async Task HandleClient(Socket socket)
       end = end < 0 ? Math.Max(0, list.Count + end) : end;
 
       StringBuilder Result = new();
-      for (int i = beg; i <= end; ++i)
-        Result.Append($"${list[i].Length}\r\n{list[i]}\r\n");
+      foreach (var item in list.Skip(beg).Take(end - beg + 1))
+        Result.Append($"${item.Length}\r\n{item}\r\n");
 
       await socket.SendAsync(Encoding.UTF8.GetBytes($"*{end - beg + 1}\r\n{Result}"));
     }
