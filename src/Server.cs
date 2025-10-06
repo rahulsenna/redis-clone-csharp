@@ -30,6 +30,7 @@ async Task HandleClient(Socket socket)
     string str = Encoding.UTF8.GetString(buffer, 0, bytesRead);
     var query = str.Split("\r\n", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where((_, idx) => idx % 2 == 0).ToArray();
     string command = query[1];
+    string key = query.Length > 2 ? query[2] : "";
 
     if (command == "PING")
       await socket.SendAsync(Encoding.UTF8.GetBytes("+PONG\r\n"));
@@ -39,14 +40,11 @@ async Task HandleClient(Socket socket)
 
     else if (command == "SET")
     {
-      string key = query[2];
       _db[key] = new RedisValue(RedisType.String, query[3], query);
       await socket.SendAsync(Encoding.UTF8.GetBytes("+OK\r\n"));
     }
     else if (command == "GET")
     {
-      string key = query[2];
-
       if (!_db.TryGetValue(key, out var value) || value.IsExpired())
         await socket.SendAsync(Encoding.UTF8.GetBytes("$-1\r\n"));
       else
@@ -54,7 +52,6 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "RPUSH")
     {
-      string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
         var list = new LinkedList<string>();
@@ -77,7 +74,6 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "LPUSH")
     {
-      string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
         var list = new LinkedList<string>();
@@ -100,7 +96,6 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "LRANGE")
     {
-      string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
         await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
@@ -123,7 +118,6 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "LLEN")
     {
-      string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
         await socket.SendAsync(Encoding.UTF8.GetBytes(":0\r\n"));
@@ -135,7 +129,6 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "LPOP")
     {
-      string key = query[2];
       if (!_db.TryGetValue(key, out var value))
       {
         await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
