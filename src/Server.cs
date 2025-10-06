@@ -14,7 +14,7 @@ ConcurrentDictionary<string, RedisValue> _db = [];
 while (true)
 {
   Socket socket = await server.AcceptSocketAsync();
-  // _ = HandleClient(socket);
+  // _ = HandleClient(socket); // synchronous until hits first __ await __
   _ = Task.Run(() => HandleClient(socket));
 }
 
@@ -60,7 +60,6 @@ async Task HandleClient(Socket socket)
 
         _db[key] = new RedisValue(RedisType.List, list);
         await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
-        Console.Error.WriteLine($"PUSHED key: {key}");
       }
       else
       {
@@ -178,6 +177,18 @@ async Task HandleClient(Socket socket)
         list.RemoveFirst();
       }
       await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
+    }
+    else if (command == "TYPE")
+    {
+      if (!_db.TryGetValue(key, out var value))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("+none\r\n"));
+        continue;
+      }
+      if (value.Type == RedisType.String)
+        await socket.SendAsync(Encoding.UTF8.GetBytes("+string\r\n"));
+      else
+        await socket.SendAsync(Encoding.UTF8.GetBytes("+stream\r\n"));
     }
 
   }
