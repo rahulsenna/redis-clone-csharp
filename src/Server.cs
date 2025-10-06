@@ -120,6 +120,18 @@ async Task HandleClient(Socket socket)
 
       await socket.SendAsync(Encoding.UTF8.GetBytes($"*{end - beg + 1}\r\n{Result}"));
     }
+    else if (command == "LLEN")
+    {
+      string key = query[2];
+      if (!_db.TryGetValue(key, out var value))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes(":0\r\n"));
+        continue;
+      }
+
+      if (value.Data is not LinkedList<string> list) continue;
+      await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+    }
 
   }
 }
