@@ -115,10 +115,11 @@ async Task HandleClient(Socket socket)
       end = end < 0 ? Math.Max(0, list.Count + end) : end;
 
       StringBuilder Result = new();
+      Result.Append($"*{end - beg + 1}\r\n");
       foreach (var item in list.Skip(beg).Take(end - beg + 1))
         Result.Append($"${item.Length}\r\n{item}\r\n");
 
-      await socket.SendAsync(Encoding.UTF8.GetBytes($"*{end - beg + 1}\r\n{Result}"));
+      await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
     }
     else if (command == "LLEN")
     {
@@ -131,6 +132,31 @@ async Task HandleClient(Socket socket)
 
       if (value.Data is not LinkedList<string> list) continue;
       await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+    }
+    else if (command == "LPOP")
+    {
+      string key = query[2];
+      if (!_db.TryGetValue(key, out var value))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
+        continue;
+      }
+      if (value.Data is not LinkedList<string> list) continue;
+
+      StringBuilder Result = new();
+      int popCount = query.Length > 3 ? Convert.ToInt32(query[3]) : 1;
+
+      if (popCount > 1)
+        Result.Append($"*{popCount}\r\n");
+      lock (list)
+      {
+        for (int i = 0; i < popCount; ++i)
+        {
+          Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
+          list.RemoveFirst();
+        }
+      }
+      await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
     }
 
   }
