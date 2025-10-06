@@ -14,8 +14,8 @@ ConcurrentDictionary<string, RedisValue> _db = [];
 while (true)
 {
   Socket socket = await server.AcceptSocketAsync();
-  _ = HandleClient(socket);
-  // _ = Task.Run(() => HandleClient(socket));
+  // _ = HandleClient(socket);
+  _ = Task.Run(() => HandleClient(socket));
 }
 
 async Task HandleClient(Socket socket)
@@ -60,6 +60,7 @@ async Task HandleClient(Socket socket)
 
         _db[key] = new RedisValue(RedisType.List, list);
         await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+        Console.Error.WriteLine($"PUSHED key: {key}");
       }
       else
       {
@@ -148,6 +149,33 @@ async Task HandleClient(Socket socket)
           Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
           list.RemoveFirst();
         }
+      }
+      await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
+    }
+    else if (command == "BLPOP")
+    {
+      int WaitMs = (int)(Convert.ToDouble(query[3]) * 1000);
+      Thread.Sleep(WaitMs);
+      if (WaitMs == 0)
+      {
+        while (!_db.TryGetValue(key, out var v))
+          Thread.Sleep(100);
+      }
+
+      if (!_db.TryGetValue(key, out var value))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("*-1\r\n"));
+        continue;
+      }
+
+      if (value.Data is not LinkedList<string> list) continue;
+      StringBuilder Result = new();
+
+      Result.Append($"*2\r\n${key.Length}\r\n{key}\r\n");
+      lock (list)
+      {
+        Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
+        list.RemoveFirst();
       }
       await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
     }
