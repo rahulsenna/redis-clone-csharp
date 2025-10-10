@@ -185,16 +185,65 @@ async Task HandleClient(Socket socket)
         await socket.SendAsync(Encoding.UTF8.GetBytes("+none\r\n"));
         continue;
       }
-      if (value.Type == RedisType.String)
-        await socket.SendAsync(Encoding.UTF8.GetBytes("+string\r\n"));
+      await socket.SendAsync(Encoding.UTF8.GetBytes($"+{value.Type.ToString().ToLower()}\r\n"));
+    }
+    else if (command == "XADD")
+    {
+
+      Dictionary<string, string> fields = [];
+      for (int i = 4; i < query.Length; i += 2)
+        fields[query[i]] = query[i + 1];
+
+      string streamKey = query[4];
+      string streamValue = query[5];
+
+      if (!_db.TryGetValue(key, out var value))
+      {
+        value = new RedisValue(RedisType.Stream, new SortedList<StreamID, StreamEntry>());
+        _db[key] = value;
+      }
+
+      if (value.Data is not SortedList<StreamID, StreamEntry> stream) continue;
+
+
+      long ms;
+      ushort sequence = 0;
+      string streamIdStr = query[3];
+      if (streamIdStr == "*")
+        ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
       else
-        await socket.SendAsync(Encoding.UTF8.GetBytes("+stream\r\n"));
+      {
+        ms = Convert.ToInt64(streamIdStr.Split('-')[0]);
+        sequence = Convert.ToUInt16(streamIdStr.Split('-')[1]);
+      }
+      StreamID streamID = new(ms, sequence);
+      if (streamID.MS == 0 && streamID.Seq == 0)
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR The ID specified in XADD must be greater than 0-0\r\n"));
+        continue;
+      }
+      if (stream.Count > 0 && streamID <= stream.Keys.Last())
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"));
+        continue;
+      }
+
+      StreamEntry entry = new()
+      {
+        Timestamp = ms,
+        Sequence = sequence,
+        Fields = fields,
+      };
+      stream[streamID] = entry;
+
+      string outputStr = streamID.MS.ToString() + "-" + streamID.Seq.ToString();
+      await socket.SendAsync(Encoding.UTF8.GetBytes($"${outputStr.Length}\r\n{outputStr}\r\n"));
     }
 
   }
 }
 
-public enum RedisType { None, String, List }
+public enum RedisType { None, String, List, Stream }
 
 public sealed record RedisValue(
   RedisType Type,
@@ -214,3 +263,31 @@ public sealed record RedisValue(
     return null;
   }
 };
+
+public struct StreamEntry
+{
+  public long Timestamp;
+  public ushort Sequence;
+  public Dictionary<string, string> Fields;
+}
+public readonly struct StreamID : IComparable<StreamID>
+{
+  public readonly long MS;
+  public readonly ushort Seq;
+
+  public int CompareTo(StreamID other)
+  {
+    int cmp = MS.CompareTo(other.MS);
+    return cmp != 0 ? cmp : Seq.CompareTo(other.Seq);
+  }
+  public StreamID(long ms, ushort seq)
+  {
+    MS = ms;
+    Seq = seq;
+  }
+
+  public static bool operator <(StreamID a, StreamID b) => a.CompareTo(b) < 0;
+  public static bool operator >(StreamID a, StreamID b) => a.CompareTo(b) > 0;
+  public static bool operator <=(StreamID a, StreamID b) => a.CompareTo(b) <= 0;
+  public static bool operator >=(StreamID a, StreamID b) => a.CompareTo(b) >= 0;
+}
