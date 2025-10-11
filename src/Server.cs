@@ -209,12 +209,22 @@ async Task HandleClient(Socket socket)
       long ms;
       ushort sequence = 0;
       string streamIdStr = query[3];
+      string[] idParts = streamIdStr.Split('-');
       if (streamIdStr == "*")
         ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
       else
       {
-        ms = Convert.ToInt64(streamIdStr.Split('-')[0]);
-        sequence = Convert.ToUInt16(streamIdStr.Split('-')[1]);
+        ms = Convert.ToInt64(idParts[0]);
+        if (idParts[1] != "*")
+          sequence = Convert.ToUInt16(idParts[1]);
+        else
+        {
+          if (ms == 0)
+            sequence++;
+
+          if (stream.Count > 0 && stream.Keys.Last().MS == ms)
+            sequence = (ushort)(stream.Keys.Last().Seq + 1);
+        }
       }
       StreamID streamID = new(ms, sequence);
       if (streamID.MS == 0 && streamID.Seq == 0)
