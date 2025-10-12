@@ -278,6 +278,51 @@ async Task HandleClient(Socket socket)
       string result = $"*{resultCount}\r\n{resultBuilder}";
       await socket.SendAsync(Encoding.UTF8.GetBytes(result));
     }
+    else if (command == "XREAD")
+    {
+      List<string> streamKeys = [];
+      List<StreamID> ids = [];
+      int queryCount = (query.Length - 3) / 2;
+
+      int idx = 3;
+      for (int i = 0; i < queryCount; ++i)
+        streamKeys.Add(query[idx++]);
+
+      for (int i = 0; i < queryCount; ++i)
+      {
+        string idStr = query[idx++];
+        ids.Add(new(Convert.ToInt64(idStr.Split("-")[0]), Convert.ToUInt16(idStr.Split("-")[1])));
+      }
+
+      StringBuilder resultBuilder = new();
+      int resultCount = 0;
+
+      for (int i = 0; i < streamKeys.Count; ++i)
+      {
+        string streamKey = streamKeys[i];
+        StreamID streamID = ids[i];
+
+        _db.TryGetValue(streamKey, out var value);
+        if (value?.Data is not SortedList<StreamID, StreamEntry> streams)
+          continue;
+        resultCount++;
+
+        int streamBegin = streams.Keys.ToList().BinarySearch(streamID) + 1;
+        resultBuilder.Append($"*2\r\n${streamKey.Length}\r\n{streamKey}\r\n");
+        resultBuilder.Append($"*{streams.Count - streamBegin}\r\n");
+        for (int si = streamBegin; si < streams.Count; ++si)
+        {
+          StreamEntry stream = streams.Values[si];
+          string idStr = streams.Keys[si].ToString();
+          resultBuilder.Append($"*2\r\n${idStr.Length}\r\n{idStr}\r\n*{stream.Fields.Count * 2}\r\n");
+
+          foreach (var (k, v) in stream.Fields)
+            resultBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
+        }
+      }
+      string result = $"*{resultCount}\r\n{resultBuilder}";
+      await socket.SendAsync(Encoding.UTF8.GetBytes(result));
+    }
 
   }
 }
