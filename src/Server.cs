@@ -247,9 +247,6 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "XRANGE")
     {
-      StreamID begin = new(Convert.ToInt64(query[3].Split('-')[0]), Convert.ToUInt16(query[3].Split('-')[1]));
-      StreamID end = new(Convert.ToInt64(query[4].Split('-')[0]), Convert.ToUInt16(query[4].Split('-')[1]));
-
       if (!_db.TryGetValue(key, out var value))
       {
         await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
@@ -257,6 +254,8 @@ async Task HandleClient(Socket socket)
       }
 
       if (value.Data is not SortedList<StreamID, StreamEntry> stream) continue;
+      StreamID begin = query[3] == "-" ? new(0, 0) : new(Convert.ToInt64(query[3].Split('-')[0]), Convert.ToUInt16(query[3].Split('-')[1]));
+      StreamID end = query[4] == "+" ? new(long.MaxValue, ushort.MaxValue) : new(Convert.ToInt64(query[4].Split('-')[0]), Convert.ToUInt16(query[4].Split('-')[1]));
 
       StringBuilder resultBuilder = new();
       int resultCount = 0;
