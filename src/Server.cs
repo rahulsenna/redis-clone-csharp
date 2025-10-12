@@ -278,51 +278,106 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "XREAD")
     {
-      List<string> streamKeys = [];
-      List<StreamID> ids = [];
-      int queryCount = (query.Length - 3) / 2;
-
-      int idx = 3;
-      for (int i = 0; i < queryCount; ++i)
-        streamKeys.Add(query[idx++]);
-
-      for (int i = 0; i < queryCount; ++i)
-      {
-        string idStr = query[idx++];
-        ids.Add(new(Convert.ToInt64(idStr.Split("-")[0]), Convert.ToUInt16(idStr.Split("-")[1])));
-      }
-
-      StringBuilder resultBuilder = new();
-      int resultCount = 0;
-
-      for (int i = 0; i < streamKeys.Count; ++i)
-      {
-        string streamKey = streamKeys[i];
-        StreamID streamID = ids[i];
-
-        _db.TryGetValue(streamKey, out var value);
-        if (value?.Data is not SortedList<StreamID, StreamEntry> streams)
-          continue;
-        resultCount++;
-
-        int streamBegin = streams.Keys.ToList().BinarySearch(streamID) + 1;
-        resultBuilder.Append($"*2\r\n${streamKey.Length}\r\n{streamKey}\r\n");
-        resultBuilder.Append($"*{streams.Count - streamBegin}\r\n");
-        for (int si = streamBegin; si < streams.Count; ++si)
-        {
-          StreamEntry stream = streams.Values[si];
-          string idStr = streams.Keys[si].ToString();
-          resultBuilder.Append($"*2\r\n${idStr.Length}\r\n{idStr}\r\n*{stream.Fields.Count * 2}\r\n");
-
-          foreach (var (k, v) in stream.Fields)
-            resultBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
-        }
-      }
-      string result = $"*{resultCount}\r\n{resultBuilder}";
-      await socket.SendAsync(Encoding.UTF8.GetBytes(result));
+      await Xread(query, socket);
     }
 
   }
+}
+
+async Task Xread(string[] query, Socket socket)
+{
+  List<string> streamKeys = [];
+  List<StreamID> ids = [];
+  int block = -1;
+
+  int idx = 3;
+  if (query[2].Equals("BLOCK", StringComparison.OrdinalIgnoreCase))
+  {
+    block = Convert.ToInt32(query[3]);
+    idx = 5;
+  }
+
+  int queryCount = (query.Length - idx) / 2;
+
+  for (int i = 0; i < queryCount; ++i)
+    streamKeys.Add(query[idx++]);
+
+  StreamID maxID = new(long.MaxValue, ushort.MaxValue);
+
+  for (int i = 0; i < queryCount; ++i)
+  {
+    string[] idStr = query[idx++].Split("-");
+    if (idStr[0] == "$")
+      ids.Add(maxID);
+    else
+      ids.Add(new(Convert.ToInt64(idStr[0]), Convert.ToUInt16(idStr[1])));
+  }
+
+  if (block > -1)
+  {
+    bool hasData = false;
+    for (int i = 0; i < streamKeys.Count; ++i)
+    {
+      if (_db.TryGetValue(streamKeys[i], out var value) &&
+      value.Data is SortedList<StreamID, StreamEntry> streams)
+      {
+        if (streams.Keys.Any(id => id > ids[i]))
+        {
+          hasData = true;
+          break;
+        }
+        if (ids[i] == maxID)
+          ids[i] = streams.Keys.Last();
+      }
+    }
+    if (!hasData)
+      await Task.Delay(block);
+  }
+
+  List<string> streamResults = [];
+  while (true)
+  {
+    for (int i = 0; i < streamKeys.Count; ++i)
+    {
+      string streamKey = streamKeys[i];
+      StreamID startID = ids[i];
+
+      _db.TryGetValue(streamKey, out var value);
+      if (value?.Data is not SortedList<StreamID, StreamEntry> streams)
+        continue;
+
+      List<string> entries = [];
+      foreach (var (id, stream) in streams)
+      {
+        if (id <= startID) continue;
+        string idStr = id.ToString();
+        StringBuilder entryBuilder = new();
+        entryBuilder.Append($"*2\r\n${idStr.Length}\r\n{idStr}\r\n*{stream.Fields.Count * 2}\r\n");
+
+        foreach (var (k, v) in stream.Fields)
+          entryBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
+
+        entries.Add(entryBuilder.ToString());
+      }
+      if (entries.Count > 0)
+      {
+        StringBuilder streamBuilder = new();
+        streamBuilder.Append($"*2\r\n${streamKey.Length}\r\n{streamKey}\r\n");
+        streamBuilder.Append($"*{entries.Count}\r\n");
+        foreach (var e in entries)
+          streamBuilder.Append(e);
+
+        streamResults.Add(streamBuilder.ToString());
+      }
+    }
+    if (block == 0 && streamResults.Count == 0)
+      await Task.Delay(100);
+    else
+      break;
+  }
+
+  string result = streamResults.Count > 0 ? $"*{streamResults.Count}\r\n{string.Join("", streamResults)}" : "*-1\r\n";
+  await socket.SendAsync(Encoding.UTF8.GetBytes(result));
 }
 
 public enum RedisType { None, String, List, Stream }
@@ -373,4 +428,6 @@ public readonly struct StreamID : IComparable<StreamID>
   public static bool operator >(StreamID a, StreamID b) => a.CompareTo(b) > 0;
   public static bool operator <=(StreamID a, StreamID b) => a.CompareTo(b) <= 0;
   public static bool operator >=(StreamID a, StreamID b) => a.CompareTo(b) >= 0;
+  public static bool operator ==(StreamID a, StreamID b) => a.CompareTo(b) == 0;
+  public static bool operator !=(StreamID a, StreamID b) => a.CompareTo(b) != 0;
 }
