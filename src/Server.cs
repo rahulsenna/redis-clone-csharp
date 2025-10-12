@@ -270,9 +270,7 @@ async Task HandleClient(Socket socket)
           resultBuilder.Append($"*2\r\n${id.ToString().Length}\r\n{id.ToString()}\r\n*{entry.Fields.Count * 2}\r\n");
 
           foreach (var (k, v) in entry.Fields)
-          {
             resultBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
-          }
         }
       }
       string result = $"*{resultCount}\r\n{resultBuilder}";
