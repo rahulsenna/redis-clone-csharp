@@ -189,13 +189,9 @@ async Task HandleClient(Socket socket)
     }
     else if (command == "XADD")
     {
-
       Dictionary<string, string> fields = [];
       for (int i = 4; i < query.Length; i += 2)
         fields[query[i]] = query[i + 1];
-
-      string streamKey = query[4];
-      string streamValue = query[5];
 
       if (!_db.TryGetValue(key, out var value))
       {
@@ -249,6 +245,40 @@ async Task HandleClient(Socket socket)
       string outputStr = streamID.MS.ToString() + "-" + streamID.Seq.ToString();
       await socket.SendAsync(Encoding.UTF8.GetBytes($"${outputStr.Length}\r\n{outputStr}\r\n"));
     }
+    else if (command == "XRANGE")
+    {
+      StreamID begin = new(Convert.ToInt64(query[3].Split('-')[0]), Convert.ToUInt16(query[3].Split('-')[1]));
+      StreamID end = new(Convert.ToInt64(query[4].Split('-')[0]), Convert.ToUInt16(query[4].Split('-')[1]));
+
+      if (!_db.TryGetValue(key, out var value))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
+        continue;
+      }
+
+      if (value.Data is not SortedList<StreamID, StreamEntry> stream) continue;
+
+      StringBuilder resultBuilder = new();
+      int resultCount = 0;
+      foreach (var (id, entry) in stream)
+      {
+        if (id > end)
+          break;
+
+        if (id >= begin)
+        {
+          resultCount++;
+          resultBuilder.Append($"*2\r\n${id.ToString().Length}\r\n{id.ToString()}\r\n*{entry.Fields.Count * 2}\r\n");
+
+          foreach (var (k, v) in entry.Fields)
+          {
+            resultBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
+          }
+        }
+      }
+      string result = $"*{resultCount}\r\n{resultBuilder}";
+      await socket.SendAsync(Encoding.UTF8.GetBytes(result));
+    }
 
   }
 }
@@ -295,6 +325,7 @@ public readonly struct StreamID : IComparable<StreamID>
     MS = ms;
     Seq = seq;
   }
+  public override string ToString() => $"{MS}-{Seq}";
 
   public static bool operator <(StreamID a, StreamID b) => a.CompareTo(b) < 0;
   public static bool operator >(StreamID a, StreamID b) => a.CompareTo(b) > 0;
