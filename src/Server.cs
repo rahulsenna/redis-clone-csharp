@@ -14,8 +14,8 @@ ConcurrentDictionary<string, RedisValue> _db = [];
 while (true)
 {
   Socket socket = await server.AcceptSocketAsync();
-  // _ = HandleClient(socket); // synchronous until hits first __ await __
-  _ = Task.Run(() => HandleClient(socket));
+  _ = HandleClient(socket); // synchronous until hits first __ await __
+  // _ = Task.Run(() => HandleClient(socket));
 }
 
 async Task HandleClient(Socket socket)
@@ -154,11 +154,11 @@ async Task HandleClient(Socket socket)
     else if (command == "BLPOP")
     {
       int WaitMs = (int)(Convert.ToDouble(query[3]) * 1000);
-      Thread.Sleep(WaitMs);
+      await Task.Delay(WaitMs);
       if (WaitMs == 0)
       {
         while (!_db.TryGetValue(key, out var v))
-          Thread.Sleep(100);
+          await Task.Delay(100);
       }
 
       if (!_db.TryGetValue(key, out var value))
