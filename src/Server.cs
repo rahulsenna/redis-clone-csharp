@@ -22,6 +22,8 @@ async Task HandleClient(Socket socket)
 {
   using var _ = socket; // Auto dispose at end of function 
   byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
+  bool isMulti = false;
+  List<string[]> multiCommands = [];
   while (true)
   {
     int bytesRead = await socket.ReceiveAsync(buffer);
@@ -30,275 +32,299 @@ async Task HandleClient(Socket socket)
     string str = Encoding.UTF8.GetString(buffer, 0, bytesRead);
     var query = str.Split("\r\n", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where((_, idx) => idx % 2 == 0).ToArray();
     string command = query[1];
-    string key = query.Length > 2 ? query[2] : "";
-
-    if (command == "PING")
-      await socket.SendAsync(Encoding.UTF8.GetBytes("+PONG\r\n"));
-
-    else if (command == "ECHO")
-      await socket.SendAsync(Encoding.UTF8.GetBytes($"+{query[2]}\r\n"));
-
-    else if (command == "SET")
+    if (command == "MULTI")
     {
-      _db[key] = new RedisValue(RedisType.String, query[3], query);
+      isMulti = true;
       await socket.SendAsync(Encoding.UTF8.GetBytes("+OK\r\n"));
     }
-    else if (command == "GET")
+    else if (command == "EXEC")
     {
-      if (!_db.TryGetValue(key, out var value) || value.IsExpired())
-        await socket.SendAsync(Encoding.UTF8.GetBytes("$-1\r\n"));
-      else
-        await socket.SendAsync(Encoding.UTF8.GetBytes($"+{value.Data as string}\r\n"));
-    }
-    else if (command == "RPUSH")
-    {
-      if (!_db.TryGetValue(key, out var value))
+      if (!isMulti)
       {
-        var list = new LinkedList<string>();
-        for (int i = 3; i < query.Length; ++i)
-          list.AddLast(query[i]);
+        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR EXEC without MULTI\r\n"));
+        continue;
+      }
+      isMulti = false;
 
-        _db[key] = new RedisValue(RedisType.List, list);
-        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
-      }
-      else
-      {
-        if (value.Data is not LinkedList<string> list) continue;
-        lock (list)
-        {
-          for (int i = 3; i < query.Length; ++i)
-            list.AddLast(query[i]);
-        }
-        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
-      }
-    }
-    else if (command == "LPUSH")
-    {
-      if (!_db.TryGetValue(key, out var value))
-      {
-        var list = new LinkedList<string>();
-        for (int i = 3; i < query.Length; ++i)
-          list.AddFirst(query[i]);
-
-        _db[key] = new RedisValue(RedisType.List, list);
-        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
-      }
-      else
-      {
-        if (value.Data is not LinkedList<string> list) continue;
-        lock (list)
-        {
-          for (int i = 3; i < query.Length; ++i)
-            list.AddFirst(query[i]);
-        }
-        await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
-      }
-    }
-    else if (command == "LRANGE")
-    {
-      if (!_db.TryGetValue(key, out var value))
+      if (multiCommands.Count == 0)
       {
         await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
         continue;
       }
 
-      if (value.Data is not LinkedList<string> list) continue;
-
-      int beg = Convert.ToInt32(query[3]);
-      int end = Math.Min(Convert.ToInt32(query[4]), list.Count - 1);
-      beg = beg < 0 ? Math.Max(0, list.Count + beg) : beg;
-      end = end < 0 ? Math.Max(0, list.Count + end) : end;
-
-      StringBuilder Result = new();
-      Result.Append($"*{end - beg + 1}\r\n");
-      foreach (var item in list.Skip(beg).Take(end - beg + 1))
-        Result.Append($"${item.Length}\r\n{item}\r\n");
-
-      await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
+      List<string> outputs = [];
+      foreach (var q in multiCommands)
+      {
+        if (await HandleCommands(socket, q) is string output)
+          outputs.Add(output);
+      }
+      multiCommands.Clear();
+      string result = $"*{outputs.Count}\r\n{string.Join("", outputs)}";
+      await socket.SendAsync(Encoding.UTF8.GetBytes(result.ToString()));
     }
-    else if (command == "LLEN")
+    else if (isMulti)
     {
-      if (!_db.TryGetValue(key, out var value))
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes(":0\r\n"));
-        continue;
-      }
-
-      if (value.Data is not LinkedList<string> list) continue;
-      await socket.SendAsync(Encoding.UTF8.GetBytes($":{list.Count}\r\n"));
+      multiCommands.Add(query);
+      await socket.SendAsync(Encoding.UTF8.GetBytes("+QUEUED\r\n"));
     }
-    else if (command == "LPOP")
+    else
     {
-      if (!_db.TryGetValue(key, out var value))
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
-        continue;
-      }
-      if (value.Data is not LinkedList<string> list) continue;
-
-      StringBuilder Result = new();
-      int popCount = query.Length > 3 ? Convert.ToInt32(query[3]) : 1;
-
-      if (popCount > 1)
-        Result.Append($"*{popCount}\r\n");
-      lock (list)
-      {
-        for (int i = 0; i < popCount; ++i)
-        {
-          Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
-          list.RemoveFirst();
-        }
-      }
-      await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
-    }
-    else if (command == "BLPOP")
-    {
-      int WaitMs = (int)(Convert.ToDouble(query[3]) * 1000);
-      await Task.Delay(WaitMs);
-      if (WaitMs == 0)
-      {
-        while (!_db.TryGetValue(key, out var v))
-          await Task.Delay(100);
-      }
-
-      if (!_db.TryGetValue(key, out var value))
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("*-1\r\n"));
-        continue;
-      }
-
-      if (value.Data is not LinkedList<string> list) continue;
-      StringBuilder Result = new();
-
-      Result.Append($"*2\r\n${key.Length}\r\n{key}\r\n");
-      lock (list)
-      {
-        Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
-        list.RemoveFirst();
-      }
-      await socket.SendAsync(Encoding.UTF8.GetBytes(Result.ToString()));
-    }
-    else if (command == "TYPE")
-    {
-      if (!_db.TryGetValue(key, out var value))
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("+none\r\n"));
-        continue;
-      }
-      await socket.SendAsync(Encoding.UTF8.GetBytes($"+{value.Type.ToString().ToLower()}\r\n"));
-    }
-    else if (command == "XADD")
-    {
-      Dictionary<string, string> fields = [];
-      for (int i = 4; i < query.Length; i += 2)
-        fields[query[i]] = query[i + 1];
-
-      if (!_db.TryGetValue(key, out var value))
-      {
-        value = new RedisValue(RedisType.Stream, new SortedList<StreamID, StreamEntry>());
-        _db[key] = value;
-      }
-
-      if (value.Data is not SortedList<StreamID, StreamEntry> stream) continue;
-
-
-      long ms;
-      ushort sequence = 0;
-      string streamIdStr = query[3];
-      string[] idParts = streamIdStr.Split('-');
-      if (streamIdStr == "*")
-        ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-      else
-      {
-        ms = Convert.ToInt64(idParts[0]);
-        if (idParts[1] != "*")
-          sequence = Convert.ToUInt16(idParts[1]);
-        else
-        {
-          if (ms == 0)
-            sequence++;
-
-          if (stream.Count > 0 && stream.Keys.Last().MS == ms)
-            sequence = (ushort)(stream.Keys.Last().Seq + 1);
-        }
-      }
-      StreamID streamID = new(ms, sequence);
-      if (streamID.MS == 0 && streamID.Seq == 0)
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR The ID specified in XADD must be greater than 0-0\r\n"));
-        continue;
-      }
-      if (stream.Count > 0 && streamID <= stream.Keys.Last())
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"));
-        continue;
-      }
-
-      StreamEntry entry = new()
-      {
-        Timestamp = ms,
-        Sequence = sequence,
-        Fields = fields,
-      };
-      stream[streamID] = entry;
-
-      string outputStr = streamID.MS.ToString() + "-" + streamID.Seq.ToString();
-      await socket.SendAsync(Encoding.UTF8.GetBytes($"${outputStr.Length}\r\n{outputStr}\r\n"));
-    }
-    else if (command == "XRANGE")
-    {
-      if (!_db.TryGetValue(key, out var value))
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("*0\r\n"));
-        continue;
-      }
-
-      if (value.Data is not SortedList<StreamID, StreamEntry> stream) continue;
-      StreamID begin = query[3] == "-" ? new(0, 0) : new(Convert.ToInt64(query[3].Split('-')[0]), Convert.ToUInt16(query[3].Split('-')[1]));
-      StreamID end = query[4] == "+" ? new(long.MaxValue, ushort.MaxValue) : new(Convert.ToInt64(query[4].Split('-')[0]), Convert.ToUInt16(query[4].Split('-')[1]));
-
-      StringBuilder resultBuilder = new();
-      int resultCount = 0;
-      foreach (var (id, entry) in stream)
-      {
-        if (id > end)
-          break;
-
-        if (id >= begin)
-        {
-          resultCount++;
-          resultBuilder.Append($"*2\r\n${id.ToString().Length}\r\n{id.ToString()}\r\n*{entry.Fields.Count * 2}\r\n");
-
-          foreach (var (k, v) in entry.Fields)
-            resultBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
-        }
-      }
-      string result = $"*{resultCount}\r\n{resultBuilder}";
-      await socket.SendAsync(Encoding.UTF8.GetBytes(result));
-    }
-    else if (command == "XREAD")
-    {
-      await Xread(query, socket);
-    }
-    else if (command == "INCR")
-    {
-      if (!_db.TryGetValue(key, out var value))
-        value = new RedisValue(RedisType.String, "0");
-      if (!int.TryParse(value.Data as string, out int num))
-      {
-        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR value is not an integer or out of range\r\n"));
-        continue;
-      }
-      num++;
-      value = value with { Data = num.ToString() };
-      _db[key] = value;
-      await socket.SendAsync(Encoding.UTF8.GetBytes($":{num}\r\n"));
+      if (await HandleCommands(socket, query) is string res)
+        await socket.SendAsync(Encoding.UTF8.GetBytes(res));
     }
 
   }
 }
 
-async Task Xread(string[] query, Socket socket)
+async Task<string?> HandleCommands(Socket socket, string[] query)
+{
+  string command = query[1];
+  string key = query.Length > 2 ? query[2] : "";
+
+  if (command == "PING")
+    return "+PONG\r\n";
+
+  else if (command == "ECHO")
+    return $"+{query[2]}\r\n";
+
+  else if (command == "SET")
+  {
+    _db[key] = new RedisValue(RedisType.String, query[3], query);
+    return "+OK\r\n";
+  }
+  else if (command == "GET")
+  {
+    if (!_db.TryGetValue(key, out var value) || value.IsExpired())
+      return "$-1\r\n";
+    else
+      return $"+{value.Data as string}\r\n";
+  }
+  else if (command == "RPUSH")
+  {
+    if (!_db.TryGetValue(key, out var value))
+    {
+      var list = new LinkedList<string>();
+      for (int i = 3; i < query.Length; ++i)
+        list.AddLast(query[i]);
+
+      _db[key] = new RedisValue(RedisType.List, list);
+      return $":{list.Count}\r\n";
+    }
+    else
+    {
+      if (value.Data is not LinkedList<string> list) return null;
+      lock (list)
+      {
+        for (int i = 3; i < query.Length; ++i)
+          list.AddLast(query[i]);
+      }
+      return $":{list.Count}\r\n";
+    }
+  }
+  else if (command == "LPUSH")
+  {
+    if (!_db.TryGetValue(key, out var value))
+    {
+      var list = new LinkedList<string>();
+      for (int i = 3; i < query.Length; ++i)
+        list.AddFirst(query[i]);
+
+      _db[key] = new RedisValue(RedisType.List, list);
+      return $":{list.Count}\r\n";
+    }
+    else
+    {
+      if (value.Data is not LinkedList<string> list) return null;
+      lock (list)
+      {
+        for (int i = 3; i < query.Length; ++i)
+          list.AddFirst(query[i]);
+      }
+      return $":{list.Count}\r\n";
+    }
+  }
+  else if (command == "LRANGE")
+  {
+    if (!_db.TryGetValue(key, out var value))
+      return "*0\r\n";
+
+    if (value.Data is not LinkedList<string> list) return null;
+
+    int beg = Convert.ToInt32(query[3]);
+    int end = Math.Min(Convert.ToInt32(query[4]), list.Count - 1);
+    beg = beg < 0 ? Math.Max(0, list.Count + beg) : beg;
+    end = end < 0 ? Math.Max(0, list.Count + end) : end;
+
+    StringBuilder Result = new();
+    Result.Append($"*{end - beg + 1}\r\n");
+    foreach (var item in list.Skip(beg).Take(end - beg + 1))
+      Result.Append($"${item.Length}\r\n{item}\r\n");
+
+    return Result.ToString();
+  }
+  else if (command == "LLEN")
+  {
+    if (!_db.TryGetValue(key, out var value))
+      return ":0\r\n";
+
+
+    if (value.Data is not LinkedList<string> list) return null;
+    return $":{list.Count}\r\n";
+  }
+  else if (command == "LPOP")
+  {
+    if (!_db.TryGetValue(key, out var value))
+      return "*0\r\n";
+
+    if (value.Data is not LinkedList<string> list) return null;
+
+    StringBuilder Result = new();
+    int popCount = query.Length > 3 ? Convert.ToInt32(query[3]) : 1;
+
+    if (popCount > 1)
+      Result.Append($"*{popCount}\r\n");
+    lock (list)
+    {
+      for (int i = 0; i < popCount; ++i)
+      {
+        Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
+        list.RemoveFirst();
+      }
+    }
+    return Result.ToString();
+  }
+  else if (command == "BLPOP")
+  {
+    int WaitMs = (int)(Convert.ToDouble(query[3]) * 1000);
+    await Task.Delay(WaitMs);
+    if (WaitMs == 0)
+    {
+      while (!_db.TryGetValue(key, out var v))
+        await Task.Delay(100);
+    }
+
+    if (!_db.TryGetValue(key, out var value))
+      return "*-1\r\n";
+
+    if (value.Data is not LinkedList<string> list) return null;
+    StringBuilder Result = new();
+
+    Result.Append($"*2\r\n${key.Length}\r\n{key}\r\n");
+    lock (list)
+    {
+      Result.Append($"${list.First().Length}\r\n{list.First()}\r\n");
+      list.RemoveFirst();
+    }
+    return Result.ToString();
+  }
+  else if (command == "TYPE")
+  {
+    if (!_db.TryGetValue(key, out var value))
+      return "+none\r\n";
+
+    return $"+{value.Type.ToString().ToLower()}\r\n";
+  }
+  else if (command == "XADD")
+  {
+    Dictionary<string, string> fields = [];
+    for (int i = 4; i < query.Length; i += 2)
+      fields[query[i]] = query[i + 1];
+
+    if (!_db.TryGetValue(key, out var value))
+    {
+      value = new RedisValue(RedisType.Stream, new SortedList<StreamID, StreamEntry>());
+      _db[key] = value;
+    }
+
+    if (value.Data is not SortedList<StreamID, StreamEntry> stream) return null;
+
+
+    long ms;
+    ushort sequence = 0;
+    string streamIdStr = query[3];
+    string[] idParts = streamIdStr.Split('-');
+    if (streamIdStr == "*")
+      ms = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    else
+    {
+      ms = Convert.ToInt64(idParts[0]);
+      if (idParts[1] != "*")
+        sequence = Convert.ToUInt16(idParts[1]);
+      else
+      {
+        if (ms == 0)
+          sequence++;
+
+        if (stream.Count > 0 && stream.Keys.Last().MS == ms)
+          sequence = (ushort)(stream.Keys.Last().Seq + 1);
+      }
+    }
+    StreamID streamID = new(ms, sequence);
+    if (streamID.MS == 0 && streamID.Seq == 0)
+      return "-ERR The ID specified in XADD must be greater than 0-0\r\n";
+
+    if (stream.Count > 0 && streamID <= stream.Keys.Last())
+      return "-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n";
+
+    StreamEntry entry = new()
+    {
+      Timestamp = ms,
+      Sequence = sequence,
+      Fields = fields,
+    };
+    stream[streamID] = entry;
+
+    string outputStr = streamID.MS.ToString() + "-" + streamID.Seq.ToString();
+    return $"${outputStr.Length}\r\n{outputStr}\r\n";
+  }
+  else if (command == "XRANGE")
+  {
+    if (!_db.TryGetValue(key, out var value))
+      return "*0\r\n";
+
+    if (value.Data is not SortedList<StreamID, StreamEntry> stream) return null;
+    StreamID begin = query[3] == "-" ? new(0, 0) : new(Convert.ToInt64(query[3].Split('-')[0]), Convert.ToUInt16(query[3].Split('-')[1]));
+    StreamID end = query[4] == "+" ? new(long.MaxValue, ushort.MaxValue) : new(Convert.ToInt64(query[4].Split('-')[0]), Convert.ToUInt16(query[4].Split('-')[1]));
+
+    StringBuilder resultBuilder = new();
+    int resultCount = 0;
+    foreach (var (id, entry) in stream)
+    {
+      if (id > end)
+        break;
+
+      if (id >= begin)
+      {
+        resultCount++;
+        resultBuilder.Append($"*2\r\n${id.ToString().Length}\r\n{id.ToString()}\r\n*{entry.Fields.Count * 2}\r\n");
+
+        foreach (var (k, v) in entry.Fields)
+          resultBuilder.Append($"${k.Length}\r\n{k}\r\n${v.Length}\r\n{v}\r\n");
+      }
+    }
+    string result = $"*{resultCount}\r\n{resultBuilder}";
+    return result;
+  }
+  else if (command == "XREAD")
+  {
+    return await Xread(query);
+  }
+  else if (command == "INCR")
+  {
+    if (!_db.TryGetValue(key, out var value))
+      value = new RedisValue(RedisType.String, "0");
+    if (!int.TryParse(value.Data as string, out int num))
+      return "-ERR value is not an integer or out of range\r\n";
+
+    num++;
+    value = value with { Data = num.ToString() };
+    _db[key] = value;
+    return $":{num}\r\n";
+  }
+  return null;
+}
+
+async Task<string> Xread(string[] query)
 {
   List<string> streamKeys = [];
   List<StreamID> ids = [];
@@ -391,7 +417,7 @@ async Task Xread(string[] query, Socket socket)
   }
 
   string result = streamResults.Count > 0 ? $"*{streamResults.Count}\r\n{string.Join("", streamResults)}" : "*-1\r\n";
-  await socket.SendAsync(Encoding.UTF8.GetBytes(result));
+  return result;
 }
 
 public enum RedisType { None, String, List, Stream }
