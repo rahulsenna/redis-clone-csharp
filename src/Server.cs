@@ -280,6 +280,20 @@ async Task HandleClient(Socket socket)
     {
       await Xread(query, socket);
     }
+    else if (command == "INCR")
+    {
+      if (!_db.TryGetValue(key, out var value))
+        value = new RedisValue(RedisType.String, "0");
+      if (!int.TryParse(value.Data as string, out int num))
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR value is not an integer or out of range\r\n"));
+        continue;
+      }
+      num++;
+      value = value with { Data = num.ToString() };
+      _db[key] = value;
+      await socket.SendAsync(Encoding.UTF8.GetBytes($":{num}\r\n"));
+    }
 
   }
 }
