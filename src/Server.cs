@@ -62,6 +62,18 @@ async Task HandleClient(Socket socket)
       string result = $"*{outputs.Count}\r\n{string.Join("", outputs)}";
       await socket.SendAsync(Encoding.UTF8.GetBytes(result.ToString()));
     }
+    else if (command == "DISCARD")
+    {
+      if (!isMulti)
+      {
+        await socket.SendAsync(Encoding.UTF8.GetBytes("-ERR DISCARD without MULTI\r\n"));
+        continue;
+      }
+
+      isMulti = false;
+      multiCommands.Clear();
+      await socket.SendAsync(Encoding.UTF8.GetBytes("+OK\r\n"));
+    }
     else if (isMulti)
     {
       multiCommands.Add(query);
