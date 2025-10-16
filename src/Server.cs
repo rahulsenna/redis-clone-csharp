@@ -3,10 +3,13 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
+int port = 6379;
+if (args is ["--port", string portStr])
+  int.TryParse(portStr, out port);
 
 const int DEFAULT_BUFFER_SIZE = 1024;
 
-TcpListener server = new(IPAddress.Any, 6379);
+TcpListener server = new(IPAddress.Any, port);
 // server.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 // server.ExclusiveAddressUse = false;
 server.Start();
