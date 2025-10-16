@@ -336,6 +336,10 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     _db[key] = value;
     return $":{num}\r\n";
   }
+  else if (command == "INFO")
+  {
+    return "$11\r\nrole:master\r\n";
+  }
   return null;
 }
 
