@@ -4,8 +4,15 @@ using System.Net.Sockets;
 using System.Text;
 
 int port = 6379;
-if (args is ["--port", string portStr])
-  int.TryParse(portStr, out port);
+string? replicaHost = null;
+for (int i = 0; i < args.Length - 1; ++i)
+{
+  if (args[i] == "--port")
+    int.TryParse(args[i + 1], out port);
+
+  if (args[i] == "--replicaof")
+    replicaHost = args[i + 1];
+}
 
 const int DEFAULT_BUFFER_SIZE = 1024;
 
@@ -338,6 +345,8 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   }
   else if (command == "INFO")
   {
+    if (replicaHost != null)
+      return "$10\r\nrole:slave\r\n";
     return "$11\r\nrole:master\r\n";
   }
   return null;
