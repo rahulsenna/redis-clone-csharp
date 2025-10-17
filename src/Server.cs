@@ -347,7 +347,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   {
     if (replicaHost != null)
       return "$10\r\nrole:slave\r\n";
-    return "$11\r\nrole:master\r\n";
+    return "$89\r\nrole:master\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0\r\n";
   }
   return null;
 }
