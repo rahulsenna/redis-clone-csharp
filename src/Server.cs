@@ -13,6 +13,19 @@ for (int i = 0; i < args.Length - 1; ++i)
   if (args[i] == "--replicaof")
     replicaHost = args[i + 1];
 }
+if (replicaHost != null)
+  await Handshake();
+
+
+async Task Handshake()
+{
+  if (!(replicaHost.Split(' ') is [var host, var portStr] && int.TryParse(portStr, out int replicaPort)))
+    return;
+  using TcpClient client = new();
+  await client.ConnectAsync(host, replicaPort);
+  NetworkStream stream = client.GetStream();
+  await stream.WriteAsync(Encoding.UTF8.GetBytes("*1\r\n$4\r\nPING\r\n"));
+}
 
 const int DEFAULT_BUFFER_SIZE = 1024;
 
