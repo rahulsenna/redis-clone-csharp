@@ -35,6 +35,9 @@ async Task Handshake()
 
   if (!await SendAndExpect(stream, buffer, "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n", "+OK\r\n"))
     return;
+
+  await stream.WriteAsync(Encoding.UTF8.GetBytes("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"));
+  int bytesRead = await stream.ReadAsync(buffer);
 }
 
 async Task<bool> SendAndExpect(NetworkStream stream, byte[] buffer, string sendStr, string receiveStr)
