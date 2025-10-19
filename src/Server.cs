@@ -16,7 +16,7 @@ for (int i = 0; i < args.Length - 1; ++i)
 if (replicaHost != null)
   await Handshake();
 
-
+const int DEFAULT_BUFFER_SIZE = 1024;
 async Task Handshake()
 {
   if (!(replicaHost.Split(' ') is [var host, var portStr] && int.TryParse(portStr, out int replicaPort)))
@@ -24,10 +24,29 @@ async Task Handshake()
   using TcpClient client = new();
   await client.ConnectAsync(host, replicaPort);
   NetworkStream stream = client.GetStream();
-  await stream.WriteAsync(Encoding.UTF8.GetBytes("*1\r\n$4\r\nPING\r\n"));
+
+  byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
+
+  if (!await SendAndExpect(stream, buffer, "*1\r\n$4\r\nPING\r\n", "+PONG\r\n"))
+    return;
+
+  if (!await SendAndExpect(stream, buffer, $"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${port.ToString().Length}\r\n{port}\r\n", "+OK\r\n"))
+    return;
+
+  if (!await SendAndExpect(stream, buffer, "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n", "+OK\r\n"))
+    return;
 }
 
-const int DEFAULT_BUFFER_SIZE = 1024;
+async Task<bool> SendAndExpect(NetworkStream stream, byte[] buffer, string sendStr, string receiveStr)
+{
+  await stream.WriteAsync(Encoding.UTF8.GetBytes(sendStr));
+  int bytesRead = await stream.ReadAsync(buffer);
+  string response = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+  if (response != receiveStr)
+    return false;
+  return true;
+}
+
 
 TcpListener server = new(IPAddress.Any, port);
 // server.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
