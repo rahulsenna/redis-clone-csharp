@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Text;
 
 string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
+List<Socket> replicas = [];
 int port = 6379;
 string? replicaHost = null;
 for (int i = 0; i < args.Length - 1; ++i)
@@ -127,6 +128,10 @@ async Task HandleClient(Socket socket)
     }
     else
     {
+      if (command == "SET")
+        foreach (var replicaSocket in replicas)
+          await replicaSocket.SendAsync(buffer[..bytesRead]);
+
       if (await HandleCommands(socket, query) is string res)
         await socket.SendAsync(Encoding.UTF8.GetBytes(res));
     }
@@ -147,7 +152,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "PSYNC")
   {
     await socket.SendAsync(Encoding.UTF8.GetBytes($"+FULLRESYNC {replicationID} 0\r\n"));
-    byte[] rdbFile = {
+    byte[] emptyRdbFile = [
     0x24, 0x38, 0x38, 0x0D, 0x0A, 0x52, 0x45, 0x44, 0x49, 0x53,
     0x30, 0x30, 0x31, 0x31, 0xFA, 0x09, 0x72, 0x65, 0x64, 0x69,
     0x73, 0x2D, 0x76, 0x65, 0x72, 0x05, 0x37, 0x2E, 0x32, 0x2E,
@@ -157,8 +162,9 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     0x73, 0x65, 0x64, 0x2D, 0x6D, 0x65, 0x6D, 0xC2, 0xB0, 0xC4,
     0x10, 0x00, 0xFA, 0x08, 0x61, 0x6F, 0x66, 0x2D, 0x62, 0x61,
     0x73, 0x65, 0xC0, 0x00, 0xFF, 0xF0, 0x6E, 0x3B, 0xFE, 0xC0,
-    0xFF, 0x5A, 0xA2};
-    await socket.SendAsync(rdbFile);
+    0xFF, 0x5A, 0xA2];
+    await socket.SendAsync(emptyRdbFile);
+    replicas.Add(socket);
   }
 
   else if (command == "ECHO")
