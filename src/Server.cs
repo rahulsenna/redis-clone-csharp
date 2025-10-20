@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
+string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 int port = 6379;
 string? replicaHost = null;
 for (int i = 0; i < args.Length - 1; ++i)
@@ -140,6 +141,11 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
 
   if (command == "PING")
     return "+PONG\r\n";
+
+  else if (command == "REPLCONF")
+    return "+OK\r\n";
+  else if (command == "PSYNC")
+    return $"+FULLRESYNC {replicationID} 0\r\n";
 
   else if (command == "ECHO")
     return $"+{query[2]}\r\n";
@@ -382,7 +388,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   {
     if (replicaHost != null)
       return "$10\r\nrole:slave\r\n";
-    return "$89\r\nrole:master\r\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\r\nmaster_repl_offset:0\r\n";
+    return $"$89\r\nrole:master\r\nmaster_replid:{replicationID}\r\nmaster_repl_offset:0\r\n";
   }
   return null;
 }
