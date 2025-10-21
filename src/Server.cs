@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using static HexdumpUtil;
 
+ConcurrentDictionary<string, RedisValue> _db = [];
 string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 List<Socket> replicas = [];
 int port = 6379;
@@ -15,15 +17,19 @@ for (int i = 0; i < args.Length - 1; ++i)
   if (args[i] == "--replicaof")
     replicaHost = args[i + 1];
 }
+bool isMaster = true;
 if (replicaHost != null)
+{
+  isMaster = false;
   await Handshake();
+}
 
 const int DEFAULT_BUFFER_SIZE = 1024;
 async Task Handshake()
 {
   if (!(replicaHost.Split(' ') is [var host, var portStr] && int.TryParse(portStr, out int replicaPort)))
     return;
-  using TcpClient client = new();
+  TcpClient client = new();
   await client.ConnectAsync(host, replicaPort);
   NetworkStream stream = client.GetStream();
 
@@ -40,6 +46,7 @@ async Task Handshake()
 
   await stream.WriteAsync(Encoding.UTF8.GetBytes("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"));
   int bytesRead = await stream.ReadAsync(buffer);
+  _ = HandleClient(client.Client);
 }
 
 async Task<bool> SendAndExpect(NetworkStream stream, byte[] buffer, string sendStr, string receiveStr)
@@ -57,7 +64,6 @@ TcpListener server = new(IPAddress.Any, port);
 // server.Server.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
 // server.ExclusiveAddressUse = false;
 server.Start();
-ConcurrentDictionary<string, RedisValue> _db = [];
 while (true)
 {
   Socket socket = await server.AcceptSocketAsync();
@@ -69,15 +75,33 @@ async Task HandleClient(Socket socket)
 {
   using var _ = socket; // Auto dispose at end of function 
   byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
+  byte[]? leftover = null;
   bool isMulti = false;
   List<string[]> multiCommands = [];
   while (true)
   {
-    int bytesRead = await socket.ReceiveAsync(buffer);
+    int bytesRead = 0;
+    if (leftover != null)
+    {
+      buffer = leftover;
+      bytesRead = leftover.Length;
+      leftover = null;
+    }
+    else
+      bytesRead = await socket.ReceiveAsync(buffer);
     if (bytesRead <= 0) break;
 
     string str = Encoding.UTF8.GetString(buffer, 0, bytesRead);
     var query = str.Split("\r\n", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where((_, idx) => idx % 2 == 0).ToArray();
+
+    if (!int.TryParse(query[0][1..], out int queryCount))
+      return;
+    if (query.Length > queryCount + 1)
+    {
+      int nextQueryIdx = str.IndexOf('*', 1);
+      if (nextQueryIdx != -1 && int.TryParse(buffer.AsSpan((nextQueryIdx + 1)..(nextQueryIdx + 2)), out int _))
+        leftover = buffer[nextQueryIdx..bytesRead];
+    }
     string command = query[1];
     if (command == "MULTI")
     {
@@ -128,7 +152,7 @@ async Task HandleClient(Socket socket)
     }
     else
     {
-      if (command == "SET")
+      if (isMaster && command == "SET")
         foreach (var replicaSocket in replicas)
           await replicaSocket.SendAsync(buffer[..bytesRead]);
 
