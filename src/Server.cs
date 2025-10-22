@@ -172,7 +172,12 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     return "+PONG\r\n";
 
   else if (command == "REPLCONF")
+  {
+    if (query[2] == "GETACK")
+      return "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
     return "+OK\r\n";
+  }
+    
   else if (command == "PSYNC")
   {
     await socket.SendAsync(Encoding.UTF8.GetBytes($"+FULLRESYNC {replicationID} 0\r\n"));
