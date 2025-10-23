@@ -1,10 +1,14 @@
+using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using static HexdumpUtil;
 
+byte[]? SavedBuffer = null;
+
 ConcurrentDictionary<string, RedisValue> _db = [];
+int replicaConsumeBytes = 0;
 string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 List<Socket> replicas = [];
 int port = 6379;
@@ -45,9 +49,11 @@ async Task Handshake()
     return;
 
   await stream.WriteAsync(Encoding.UTF8.GetBytes("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"));
-  int bytesRead = await stream.ReadAsync(buffer);
+  await stream.ReadExactlyAsync(buffer, 0, 56); // FULLRESYNC
+  await stream.ReadExactlyAsync(buffer, 0, 88+5); // empty rdb for now (TODO: check and read entire rdb file)
+
   _ = HandleClient(client.Client);
-}
+};
 
 async Task<bool> SendAndExpect(NetworkStream stream, byte[] buffer, string sendStr, string receiveStr)
 {
@@ -71,37 +77,73 @@ while (true)
   // _ = Task.Run(() => HandleClient(socket));
 }
 
+async Task<int> ChunkRESP(Socket socket, byte[] buffer)
+{
+  int bytesRead = 0;
+
+  while (true)
+  {
+    if (SavedBuffer != null)
+    {
+      buffer.AsSpan().Clear();
+      SavedBuffer.AsSpan().CopyTo(buffer);
+      bytesRead = SavedBuffer.Length;
+      SavedBuffer = null;
+    }
+    else
+      bytesRead += await socket.ReceiveAsync(buffer.AsMemory(bytesRead));
+
+    if (bytesRead <= 0)
+    {
+      Console.Error.WriteLine("Disconnected");
+      return 0;
+    }
+    if (buffer[0] != (byte)'*')
+    {
+      Console.Error.WriteLine("Malformed RESP");
+      return 0;
+    }
+    int queryCountIdx = Array.IndexOf(buffer, (byte)'\r');
+    if (queryCountIdx == -1)
+      continue;
+
+    if (!Utf8Parser.TryParse(buffer.AsSpan(1, queryCountIdx), out int queryCount, out _))
+      return 0;
+
+    int expectedLines = queryCount * 2 + 1;
+    int foundLines = 0;
+    int searchPos = 0;
+    int lineBreakIdx = -1;
+
+    while ((lineBreakIdx = Array.IndexOf(buffer, (byte)'\r', searchPos)) != -1)
+    {
+      searchPos = lineBreakIdx + 2;
+      foundLines++;
+      if (foundLines >= expectedLines)
+        break;
+    }
+
+    if (foundLines < expectedLines)
+      continue;
+    if (searchPos < bytesRead)
+      SavedBuffer = buffer[searchPos..bytesRead];
+    return searchPos;
+  }
+}
+
 async Task HandleClient(Socket socket)
 {
   using var _ = socket; // Auto dispose at end of function 
   byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
-  byte[]? leftover = null;
+  
   bool isMulti = false;
   List<string[]> multiCommands = [];
   while (true)
   {
-    int bytesRead = 0;
-    if (leftover != null)
-    {
-      buffer = leftover;
-      bytesRead = leftover.Length;
-      leftover = null;
-    }
-    else
-      bytesRead = await socket.ReceiveAsync(buffer);
+    int bytesRead = await ChunkRESP(socket, buffer);
     if (bytesRead <= 0) break;
-
     string str = Encoding.UTF8.GetString(buffer, 0, bytesRead);
     var query = str.Split("\r\n", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Where((_, idx) => idx % 2 == 0).ToArray();
-
-    if (!int.TryParse(query[0][1..], out int queryCount))
-      return;
-    if (query.Length > queryCount + 1)
-    {
-      int nextQueryIdx = str.IndexOf('*', 1);
-      if (nextQueryIdx != -1 && int.TryParse(buffer.AsSpan((nextQueryIdx + 1)..(nextQueryIdx + 2)), out int _))
-        leftover = buffer[nextQueryIdx..bytesRead];
-    }
     string command = query[1];
     if (command == "MULTI")
     {
@@ -159,6 +201,8 @@ async Task HandleClient(Socket socket)
       if (await HandleCommands(socket, query) is string res)
         await socket.SendAsync(Encoding.UTF8.GetBytes(res));
     }
+    if (!isMaster)
+      replicaConsumeBytes += bytesRead;
 
   }
 }
@@ -169,12 +213,15 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   string key = query.Length > 2 ? query[2] : "";
 
   if (command == "PING")
+  {
+    if (!isMaster) return null;
     return "+PONG\r\n";
+  }
 
   else if (command == "REPLCONF")
   {
     if (query[2] == "GETACK")
-      return "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
+      return $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${replicaConsumeBytes.ToString().Length}\r\n{replicaConsumeBytes}\r\n";
     return "+OK\r\n";
   }
     
@@ -202,6 +249,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "SET")
   {
     _db[key] = new RedisValue(RedisType.String, query[3], query);
+    if (!isMaster) return null;
     return "+OK\r\n";
   }
   else if (command == "GET")
