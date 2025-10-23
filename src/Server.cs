@@ -7,6 +7,10 @@ using static HexdumpUtil;
 
 byte[]? SavedBuffer = null;
 
+int replicaAckCount = 0;
+int masterWriteOffset = 0;
+bool waiting = false;
+
 ConcurrentDictionary<string, RedisValue> _db = [];
 int replicaConsumeBytes = 0;
 string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
@@ -50,10 +54,11 @@ async Task Handshake()
 
   await stream.WriteAsync(Encoding.UTF8.GetBytes("*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"));
   await stream.ReadExactlyAsync(buffer, 0, 56); // FULLRESYNC
-  await stream.ReadExactlyAsync(buffer, 0, 88+5); // empty rdb for now (TODO: check and read entire rdb file)
+  await stream.ReadExactlyAsync(buffer, 0, 88 + 5); // empty rdb for now (TODO: check and read entire rdb file)
 
   _ = HandleClient(client.Client);
-};
+}
+;
 
 async Task<bool> SendAndExpect(NetworkStream stream, byte[] buffer, string sendStr, string receiveStr)
 {
@@ -135,7 +140,7 @@ async Task HandleClient(Socket socket)
 {
   using var _ = socket; // Auto dispose at end of function 
   byte[] buffer = new byte[DEFAULT_BUFFER_SIZE];
-  
+
   bool isMulti = false;
   List<string[]> multiCommands = [];
   while (true)
@@ -195,14 +200,16 @@ async Task HandleClient(Socket socket)
     else
     {
       if (isMaster && command == "SET")
+      {
+        masterWriteOffset += bytesRead;
         foreach (var replicaSocket in replicas)
-          await replicaSocket.SendAsync(buffer[..bytesRead]);
+          await replicaSocket.SendAsync(buffer.AsMemory(0, bytesRead));
+      }
 
       if (await HandleCommands(socket, query) is string res)
         await socket.SendAsync(Encoding.UTF8.GetBytes(res));
     }
-    if (!isMaster)
-      replicaConsumeBytes += bytesRead;
+    replicaConsumeBytes += bytesRead;
 
   }
 }
@@ -222,9 +229,32 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   {
     if (query[2] == "GETACK")
       return $"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${replicaConsumeBytes.ToString().Length}\r\n{replicaConsumeBytes}\r\n";
+
+    if (waiting)
+    {
+      if (query.Length > 3 && long.TryParse(query[3], out long ackOffset) && ackOffset >= masterWriteOffset)
+        replicaAckCount++;
+      return null;
+    }
     return "+OK\r\n";
   }
-    
+  else if (command == "WAIT")
+  {
+    if (masterWriteOffset == 0)
+      return $":{replicas.Count}\r\n";
+
+    int minReplica = Convert.ToInt32(query[2]);
+    int timeoutMs = Convert.ToInt32(query[3]);
+
+    replicaAckCount = 0;
+    waiting = true;
+    foreach (var sock in replicas)
+      await sock.SendAsync(Encoding.UTF8.GetBytes("*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"));
+
+    await Task.Delay(timeoutMs);
+    waiting = false;
+    return $":{replicaAckCount}\r\n";
+  }
   else if (command == "PSYNC")
   {
     await socket.SendAsync(Encoding.UTF8.GetBytes($"+FULLRESYNC {replicationID} 0\r\n"));
