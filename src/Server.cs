@@ -17,6 +17,9 @@ string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 List<Socket> replicas = [];
 int port = 6379;
 string? replicaHost = null;
+
+Dictionary<string, string> CONFIG = [];
+
 for (int i = 0; i < args.Length - 1; ++i)
 {
   if (args[i] == "--port")
@@ -24,6 +27,12 @@ for (int i = 0; i < args.Length - 1; ++i)
 
   if (args[i] == "--replicaof")
     replicaHost = args[i + 1];
+
+  if (args[i] == "--dir")
+    CONFIG["dir"] = args[i + 1];
+  
+  if (args[i] == "--dbfilename")
+    CONFIG["dbfilename"] = args[i + 1];
 }
 bool isMaster = true;
 if (replicaHost != null)
@@ -254,6 +263,14 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     await Task.Delay(timeoutMs);
     waiting = false;
     return $":{replicaAckCount}\r\n";
+  }
+  else if (command == "CONFIG")
+  {
+    if (query[2] == "GET")
+    {
+      var arg = query[3];
+      return $"*2\r\n${arg.Length}\r\n{arg}\r\n${CONFIG[arg].Length}\r\n{CONFIG[arg]}\r\n";
+    }
   }
   else if (command == "PSYNC")
   {
