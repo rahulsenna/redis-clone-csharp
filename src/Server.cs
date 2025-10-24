@@ -205,6 +205,7 @@ async Task HandleClient(Socket socket)
 
   bool isMulti = false;
   List<string[]> multiCommands = [];
+  HashSet<string> subscriptions = [];
   while (true)
   {
     int bytesRead = await ChunkRESP(socket, buffer);
@@ -259,6 +260,11 @@ async Task HandleClient(Socket socket)
       multiCommands.Add(query);
       await socket.SendAsync(Encoding.UTF8.GetBytes("+QUEUED\r\n"));
     }
+    else if (command == "SUBSCRIBE")
+    {
+      subscriptions.Add(query[2]);
+      await socket.SendAsync(Encoding.UTF8.GetBytes($"*3\r\n$9\r\nsubscribe\r\n${query[2].Length}\r\n{query[2]}\r\n:{subscriptions.Count}\r\n"));
+    }
     else
     {
       if (isMaster && command == "SET")
@@ -269,7 +275,17 @@ async Task HandleClient(Socket socket)
       }
 
       if (await HandleCommands(socket, query) is string res)
-        await socket.SendAsync(Encoding.UTF8.GetBytes(res));
+      {
+        if (subscriptions.Count > 0)
+        {
+          if (command == "PING")
+            await socket.SendAsync(Encoding.UTF8.GetBytes("*2\r\n$4\r\npong\r\n$0\r\n\r\n"));
+          else
+            await socket.SendAsync(Encoding.UTF8.GetBytes($"-ERR Can't execute '{command}': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context\r\n"));
+        }
+        else
+          await socket.SendAsync(Encoding.UTF8.GetBytes(res));
+      }
     }
     replicaConsumeBytes += bytesRead;
 
