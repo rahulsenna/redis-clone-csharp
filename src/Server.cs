@@ -13,6 +13,7 @@ int masterWriteOffset = 0;
 bool waiting = false;
 
 ConcurrentDictionary<string, RedisValue> _db = [];
+ConcurrentDictionary<string, HashSet<Socket>> subChannels = [];
 int replicaConsumeBytes = 0;
 string replicationID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb";
 List<Socket> replicas = [];
@@ -263,7 +264,22 @@ async Task HandleClient(Socket socket)
     else if (command == "SUBSCRIBE")
     {
       subscriptions.Add(query[2]);
+      if (subChannels.TryGetValue(query[2], out var sockets))
+        sockets.Add(socket);
+      else
+        subChannels[query[2]] = [socket];
+
       await socket.SendAsync(Encoding.UTF8.GetBytes($"*3\r\n$9\r\nsubscribe\r\n${query[2].Length}\r\n{query[2]}\r\n:{subscriptions.Count}\r\n"));
+    }
+    else if (command == "PUBLISH")
+    {
+      if (subChannels.TryGetValue(query[2], out var sockets))
+      {
+        foreach (var sock in sockets)
+          await sock.SendAsync(Encoding.UTF8.GetBytes($"*3\r\n$7\r\nmessage\r\n${query[2].Length}\r\n{query[2]}\r\n${query[3].Length}\r\n{query[3]}\r\n"));
+
+        await socket.SendAsync(Encoding.UTF8.GetBytes($":{sockets.Count}\r\n"));
+      }
     }
     else
     {
