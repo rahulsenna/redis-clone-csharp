@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Buffers.Text;
 using System.Collections.Concurrent;
 using System.Net;
@@ -30,10 +31,17 @@ for (int i = 0; i < args.Length - 1; ++i)
 
   if (args[i] == "--dir")
     CONFIG["dir"] = args[i + 1];
-  
+
   if (args[i] == "--dbfilename")
     CONFIG["dbfilename"] = args[i + 1];
 }
+
+if (CONFIG.ContainsKey("dir"))
+{
+  string rdbPath = Path.Combine(CONFIG["dir"], CONFIG["dbfilename"]);
+  await Read_RDB_FILE(rdbPath);
+}
+
 bool isMaster = true;
 if (replicaHost != null)
 {
@@ -42,6 +50,51 @@ if (replicaHost != null)
 }
 
 const int DEFAULT_BUFFER_SIZE = 1024;
+async Task Read_RDB_FILE(string path)
+{
+  if (!File.Exists(path))
+    return;
+  var data = File.ReadAllBytes(path);
+
+  int byteIndex = Array.IndexOf(data, (byte)0xFB);
+
+  int dbMapSize = data[++byteIndex];
+  int dbExpiryMapSize = data[++byteIndex];
+
+  ++byteIndex;
+  for (int i = 0; i < dbMapSize; ++i)
+  {
+    long? timeoutMs = null;
+    if (i < dbExpiryMapSize)
+    {
+      byte exp_type = data[byteIndex++];
+      if (exp_type == 0xFC)
+      {
+        timeoutMs = BitConverter.ToInt64(data.AsSpan(byteIndex, 8));
+        byteIndex += 8;
+      }
+      else if (exp_type == 0xFD)
+      {
+        timeoutMs = BitConverter.ToInt64(data.AsSpan(byteIndex, 4));
+        byteIndex += 4;
+      }
+    }
+
+    byte encoding = data[byteIndex++]; // encodings 0=string
+
+    int length = data[byteIndex++];
+    string key = Encoding.UTF8.GetString(data.AsSpan(byteIndex, length));
+    byteIndex += length;
+
+    length = data[byteIndex++];
+    string value = Encoding.UTF8.GetString(data.AsSpan(byteIndex, length));
+    byteIndex += length;
+
+    _db[key] = new RedisValue(RedisType.String, value, timeoutMs);
+  }
+
+}
+
 async Task Handshake()
 {
   if (!(replicaHost.Split(' ') is [var host, var portStr] && int.TryParse(portStr, out int replicaPort)))
@@ -271,6 +324,11 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
       var arg = query[3];
       return $"*2\r\n${arg.Length}\r\n{arg}\r\n${CONFIG[arg].Length}\r\n{CONFIG[arg]}\r\n";
     }
+  }
+  else if (command == "KEYS")
+  {
+    string keys = string.Join("", _db.Keys.Select(key => $"${key.Length}\r\n{key}\r\n"));
+    return $"*{_db.Count}\r\n{keys}";
   }
   else if (command == "PSYNC")
   {
