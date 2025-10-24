@@ -271,6 +271,14 @@ async Task HandleClient(Socket socket)
 
       await socket.SendAsync(Encoding.UTF8.GetBytes($"*3\r\n$9\r\nsubscribe\r\n${query[2].Length}\r\n{query[2]}\r\n:{subscriptions.Count}\r\n"));
     }
+    else if (command == "UNSUBSCRIBE")
+    {
+      subscriptions.Remove(query[2]);
+      if (subChannels.TryGetValue(query[2], out var sockets))
+        sockets.Remove(socket);
+
+      await socket.SendAsync(Encoding.UTF8.GetBytes($"*3\r\n$11\r\nunsubscribe\r\n${query[2].Length}\r\n{query[2]}\r\n:{subscriptions.Count}\r\n"));
+    }
     else if (command == "PUBLISH")
     {
       if (subChannels.TryGetValue(query[2], out var sockets))
