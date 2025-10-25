@@ -19,7 +19,7 @@ int replicaAckCount = 0;
 int masterWriteOffset = 0;
 bool waiting = false;
 
-ConcurrentDictionary<string, SortedSet> zsets = [];
+ConcurrentDictionary<string, SortedSet> _zsets = [];
 ConcurrentDictionary<string, RedisValue> _db = [];
 ConcurrentDictionary<string, HashSet<Socket>> subChannels = [];
 int replicaConsumeBytes = 0;
@@ -643,10 +643,10 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "ZADD")
   {
     string zKey = query[2];
-    if (!zsets.TryGetValue(zKey, out var zset))
+    if (!_zsets.TryGetValue(zKey, out var zset))
     {
       zset = new();
-      zsets[zKey] = zset;
+      _zsets[zKey] = zset;
     }
     int count = zset.Add(query[4], double.Parse(query[3]));
     return $":{count}\r\n";
@@ -654,7 +654,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "ZRANK")
   {
     string zKey = query[2];
-    if (!zsets.TryGetValue(zKey, out var zset))
+    if (!_zsets.TryGetValue(zKey, out var zset))
       return "$-1\r\n";
     int? rank = zset.GetRank(query[3]);
     return rank != null ? $":{rank}\r\n" : "$-1\r\n";
@@ -662,7 +662,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "ZRANGE")
   {
     string zKey = query[2];
-    if (!zsets.TryGetValue(zKey, out var zset))
+    if (!_zsets.TryGetValue(zKey, out var zset))
       return "*0\r\n";
     int beg = int.Parse(query[3]);
     int end = int.Parse(query[4]);
@@ -673,14 +673,14 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "ZCARD")
   {
     string zKey = query[2];
-    if (!zsets.TryGetValue(zKey, out var zset))
+    if (!_zsets.TryGetValue(zKey, out var zset))
       return ":0\r\n";
     return $":{zset.Count}\r\n";
   }
   else if (command == "ZSCORE")
   {
     string zKey = query[2];
-    if (!zsets.TryGetValue(zKey, out var zset))
+    if (!_zsets.TryGetValue(zKey, out var zset))
       return "$-1\r\n";
     double? score = zset.GetScore(query[3]);
     return score == null ? "$-1\r\n" : $"${score?.ToString().Length}\r\n{score}\r\n";
@@ -688,7 +688,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
   else if (command == "ZREM")
   {
     string zKey = query[2];
-    if (!zsets.TryGetValue(zKey, out var zset))
+    if (!_zsets.TryGetValue(zKey, out var zset))
       return ":0\r\n";
     return zset.Remove(query[3]) ? ":1\r\n" : ":0\r\n";
   }
@@ -700,10 +700,10 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     if (longitude < MIN_LONGITUDE || longitude > MAX_LONGITUDE || latitude < MIN_LATITUDE || latitude > MAX_LATITUDE)
       return "-ERR invalid longitude,latitude pair\r\n";
 
-    if (!zsets.TryGetValue(geoKey, out var geoSet))
+    if (!_zsets.TryGetValue(geoKey, out var geoSet))
     {
       geoSet = new();
-      zsets[geoKey] = geoSet;
+      _zsets[geoKey] = geoSet;
     }
     int count = geoSet.Add(query[5], double.Parse(query[3]));
     return $":{count}\r\n";
