@@ -16,6 +16,32 @@ const double LATITUDE_RANGE = MAX_LATITUDE - MIN_LATITUDE;
 const double LONGITUDE_RANGE = MAX_LONGITUDE - MIN_LONGITUDE;
 const int GEO_STEP = 26;
 
+(double, double) ConvertGridNumbersToCoordinates(uint gridLatitudeCompact, uint gridLongitudeCompact)
+{
+  // Calculate the grid boundaries
+  double gridLatitudeMin = MIN_LATITUDE + LATITUDE_RANGE * (gridLatitudeCompact / Math.Pow(2, GEO_STEP));
+  double gridLatitudeMax = MIN_LATITUDE + LATITUDE_RANGE * ((gridLatitudeCompact + 1) / Math.Pow(2, GEO_STEP));
+  double gridLongitudeMin = MIN_LONGITUDE + LONGITUDE_RANGE * (gridLongitudeCompact / Math.Pow(2, GEO_STEP));
+  double gridLongitudeMax = MIN_LONGITUDE + LONGITUDE_RANGE * ((gridLongitudeCompact + 1) / Math.Pow(2, GEO_STEP));
+
+  // Calculate the center point of the grid cell
+  double latitude = (gridLatitudeMin + gridLatitudeMax) / 2;
+  double longitude = (gridLongitudeMin + gridLongitudeMax) / 2;
+
+  return (longitude, latitude);
+}
+
+uint CompactInt64ToInt32(ulong v)
+{
+  v &= 0x5555555555555555UL;
+  v = (v | (v >> 1)) & 0x3333333333333333UL;
+  v = (v | (v >> 2)) & 0x0F0F0F0F0F0F0F0FUL;
+  v = (v | (v >> 4)) & 0x00FF00FF00FF00FFUL;
+  v = (v | (v >> 8)) & 0x0000FFFF0000FFFFUL;
+  v = (v | (v >> 16)) & 0x00000000FFFFFFFFUL;
+  return (uint)v;
+}
+
 ulong SpreadInt32ToInt64(uint v)
 {
 	ulong result = v;
@@ -40,6 +66,19 @@ ulong CoordEncode(double longitude, double latitude)
 	ulong lonSpread = SpreadInt32ToInt64(lonInt);
 	ulong latSpread = SpreadInt32ToInt64(latInt);
 	return latSpread | (lonSpread << 1);
+}
+
+(double, double) DecodeCoord(ulong geoCode)
+{
+  // Align bits of both latitude and longitude to take even-numbered position
+  ulong y = geoCode >> 1;
+  ulong x = geoCode;
+
+  // Compact bits back to 32-bit ints
+  uint gridLatitudeCompact = CompactInt64ToInt32(x);
+  uint gridLongitudeCompact = CompactInt64ToInt32(y);
+
+  return ConvertGridNumbersToCoordinates(gridLatitudeCompact, gridLongitudeCompact);
 }
 
 byte[]? SavedBuffer = null;
@@ -736,6 +775,29 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     }
     int count = geoSet.Add(query[5], CoordEncode(longitude, latitude));
     return $":{count}\r\n";
+  }
+  else if (command == "GEOPOS")
+  {
+    StringBuilder sb = new();
+    sb.Append($"*{query.Length - 3}\r\n");
+
+    string geoKey = query[2];
+    _zsets.TryGetValue(geoKey, out var geoSet);
+
+    for (int i = 3; i < query.Length; ++i)
+    {
+      double? encodedPos = geoSet?.GetScore(query[i]);
+      if (encodedPos == null)
+        sb.Append("*-1\r\n");
+      else
+      {
+        var (lon, lat) = DecodeCoord((ulong)encodedPos);
+        string lonStr = lon.ToString();
+        string latStr = lat.ToString();
+        sb.Append($"*2\r\n${lonStr.Length}\r\n{lonStr}\r\n${latStr.Length}\r\n{latStr}\r\n");
+      }
+    }
+    return sb.ToString();
   }
 
   return null;
