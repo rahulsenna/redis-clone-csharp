@@ -6,6 +6,13 @@ using System.Net.Sockets;
 using System.Text;
 using static HexdumpUtil;
 
+
+double MIN_LATITUDE = -85.05112878;
+double MAX_LATITUDE = 85.05112878;
+double MIN_LONGITUDE = -180.0;
+double MAX_LONGITUDE = 180.0;
+
+
 byte[]? SavedBuffer = null;
 
 int replicaAckCount = 0;
@@ -641,9 +648,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
       zset = new();
       zsets[zKey] = zset;
     }
-    int count = zset.Count;
-    zset.Add(query[4], double.Parse(query[3]));
-    count = zset.Count - count;
+    int count = zset.Add(query[4], double.Parse(query[3]));
     return $":{count}\r\n";
   }
   else if (command == "ZRANK")
@@ -686,6 +691,22 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     if (!zsets.TryGetValue(zKey, out var zset))
       return ":0\r\n";
     return zset.Remove(query[3]) ? ":1\r\n" : ":0\r\n";
+  }
+  else if (command == "GEOADD")
+  {
+    string geoKey = query[2];
+    double longitude = double.Parse(query[3]);
+    double latitude = double.Parse(query[4]);
+    if (longitude < MIN_LONGITUDE || longitude > MAX_LONGITUDE || latitude < MIN_LATITUDE || latitude > MAX_LATITUDE)
+      return "-ERR invalid longitude,latitude pair\r\n";
+
+    if (!zsets.TryGetValue(geoKey, out var geoSet))
+    {
+      geoSet = new();
+      zsets[geoKey] = geoSet;
+    }
+    int count = geoSet.Add(query[5], double.Parse(query[3]));
+    return $":{count}\r\n";
   }
 
   return null;
@@ -846,12 +867,14 @@ public class SortedSet
   SortedDictionary<double, HashSet<string>> _sorted = [];
 
   public int Count => _dict.Count;
-  public void Add(string member, double score)
+  public int Add(string member, double score)
   {
+    int res = 1;
     if (_dict.TryGetValue(member, out var oldScore))
     {
       _dict.Remove(member);
       _sorted.Remove(oldScore);
+      res = 0;
     }
     _dict[member] = score;
     if (!_sorted.TryGetValue(score, out var sorted))
@@ -860,7 +883,7 @@ public class SortedSet
       _sorted[score] = sorted;
     }
     sorted.Add(member);
-
+    return res;
   }
   public bool Remove(string member)
   {
