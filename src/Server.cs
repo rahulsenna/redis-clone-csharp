@@ -839,6 +839,25 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
     string dist = GetDistance(lonA, latA, lonB, latB).ToString();
     return $"${dist.Length}\r\n{dist}\r\n";
   }
+  else if (command == "GEOSEARCH")
+  {
+    string geoKey = query[2];
+    if (!_zsets.TryGetValue(geoKey, out var geoSet))
+      return "$-1\r\n";
+
+    double searchLon = double.Parse(query[4]);
+    double searchLat = double.Parse(query[5]);
+    double searchRadius = double.Parse(query[7]);
+    List<string> found = [];
+    foreach (var (location, encodedPos) in geoSet._dict)
+    {
+      var (lon, lat) = DecodeCoord((ulong)encodedPos);
+      if (GetDistance(searchLon, searchLat, lon, lat) < searchRadius)
+        found.Add(location);
+    }
+    string res = string.Join("", found.Select(x => $"${x.Length}\r\n{x}\r\n"));
+    return $"*{found.Count}\r\n{res}";
+  }
 
   return null;
 }
@@ -994,7 +1013,7 @@ public readonly struct StreamID : IComparable<StreamID>
 
 public class SortedSet
 {
-  Dictionary<string, double> _dict = [];
+  public Dictionary<string, double> _dict = [];
   SortedDictionary<double, HashSet<string>> _sorted = [];
 
   public int Count => _dict.Count;
