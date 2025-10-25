@@ -7,11 +7,40 @@ using System.Text;
 using static HexdumpUtil;
 
 
-double MIN_LATITUDE = -85.05112878;
-double MAX_LATITUDE = 85.05112878;
-double MIN_LONGITUDE = -180.0;
-double MAX_LONGITUDE = 180.0;
+const double MIN_LATITUDE = -85.05112878;
+const double MAX_LATITUDE = 85.05112878;
+const double MIN_LONGITUDE = -180.0;
+const double MAX_LONGITUDE = 180.0;
 
+const double LATITUDE_RANGE = MAX_LATITUDE - MIN_LATITUDE;
+const double LONGITUDE_RANGE = MAX_LONGITUDE - MIN_LONGITUDE;
+const int GEO_STEP = 26;
+
+ulong SpreadInt32ToInt64(uint v)
+{
+	ulong result = v;
+	result = (result | (result << 16)) & 0x0000FFFF0000FFFFUL;
+	result = (result | (result << 8))  & 0x00FF00FF00FF00FFUL;
+	result = (result | (result << 4))  & 0x0F0F0F0F0F0F0F0FUL;
+	result = (result | (result << 2))  & 0x3333333333333333UL;
+	result = (result | (result << 1))  & 0x5555555555555555UL;
+	return result;
+}
+
+ulong CoordEncode(double longitude, double latitude)
+{
+  // Normalize to the range 0-2^26
+  double normalizedLatitude = Math.Pow(2, GEO_STEP) * (latitude - MIN_LATITUDE) / LATITUDE_RANGE;
+  double normalizedLongitude = Math.Pow(2, GEO_STEP) * (longitude - MIN_LONGITUDE) / LONGITUDE_RANGE;
+
+	// Truncate to integers
+	uint latInt = (uint)normalizedLatitude;
+	uint lonInt = (uint)normalizedLongitude;
+
+	ulong lonSpread = SpreadInt32ToInt64(lonInt);
+	ulong latSpread = SpreadInt32ToInt64(latInt);
+	return latSpread | (lonSpread << 1);
+}
 
 byte[]? SavedBuffer = null;
 
@@ -705,7 +734,7 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
       geoSet = new();
       _zsets[geoKey] = geoSet;
     }
-    int count = geoSet.Add(query[5], double.Parse(query[3]));
+    int count = geoSet.Add(query[5], CoordEncode(longitude, latitude));
     return $":{count}\r\n";
   }
 
