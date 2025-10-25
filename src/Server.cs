@@ -16,6 +16,26 @@ const double LATITUDE_RANGE = MAX_LATITUDE - MIN_LATITUDE;
 const double LONGITUDE_RANGE = MAX_LONGITUDE - MIN_LONGITUDE;
 const int GEO_STEP = 26;
 
+const double EARTH_RADIUS_IN_METERS = 6372797.560856D;
+
+double GetDistance(double aLon, double aLat, double bLon, double bLat)
+{
+  double lat1Rad = double.DegreesToRadians(aLat);
+  double lon1Rad = double.DegreesToRadians(aLon);
+  double lat2Rad = double.DegreesToRadians(bLat);
+  double lon2Rad = double.DegreesToRadians(bLon);
+
+  double delta_lat = lat2Rad - lat1Rad;
+  double delta_lon = lon2Rad - lon1Rad;
+
+  double a = Math.Sin(delta_lat / 2.0) * Math.Sin(delta_lat / 2.0) +
+         Math.Cos(lat1Rad) * Math.Cos(lat2Rad) *
+           Math.Sin(delta_lon / 2.0) * Math.Sin(delta_lon / 2.0);
+
+  double c = 2.0 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1.0 - a));
+  return EARTH_RADIUS_IN_METERS * c;
+}
+
 (double, double) ConvertGridNumbersToCoordinates(uint gridLatitudeCompact, uint gridLongitudeCompact)
 {
   // Calculate the grid boundaries
@@ -798,6 +818,26 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
       }
     }
     return sb.ToString();
+  }
+  else if (command == "GEODIST")
+  {
+    string geoKey = query[2];
+    if (!_zsets.TryGetValue(geoKey, out var geoSet))
+      return "$-1\r\n";
+
+    string locationA = query[3];
+    string locationB = query[4];
+    double? encodedPosA = geoSet.GetScore(locationA);
+    double? encodedPosB = geoSet.GetScore(locationB);
+
+    if (encodedPosA == null || encodedPosB == null)
+      return "$-1\r\n";
+
+    var (lonA, latA) = DecodeCoord((ulong)encodedPosA);
+    var (lonB, latB) = DecodeCoord((ulong)encodedPosB);
+
+    string dist = GetDistance(lonA, latA, lonB, latB).ToString();
+    return $"${dist.Length}\r\n{dist}\r\n";
   }
 
   return null;
