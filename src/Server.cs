@@ -12,6 +12,7 @@ int replicaAckCount = 0;
 int masterWriteOffset = 0;
 bool waiting = false;
 
+ConcurrentDictionary<string, SortedSet> zsets = [];
 ConcurrentDictionary<string, RedisValue> _db = [];
 ConcurrentDictionary<string, HashSet<Socket>> subChannels = [];
 int replicaConsumeBytes = 0;
@@ -632,6 +633,61 @@ async Task<string?> HandleCommands(Socket socket, string[] query)
       return "$10\r\nrole:slave\r\n";
     return $"$89\r\nrole:master\r\nmaster_replid:{replicationID}\r\nmaster_repl_offset:0\r\n";
   }
+  else if (command == "ZADD")
+  {
+    string zKey = query[2];
+    if (!zsets.TryGetValue(zKey, out var zset))
+    {
+      zset = new();
+      zsets[zKey] = zset;
+    }
+    int count = zset.Count;
+    zset.Add(query[4], double.Parse(query[3]));
+    count = zset.Count - count;
+    return $":{count}\r\n";
+  }
+  else if (command == "ZRANK")
+  {
+    string zKey = query[2];
+    if (!zsets.TryGetValue(zKey, out var zset))
+      return "$-1\r\n";
+    int? rank = zset.GetRank(query[3]);
+    return rank != null ? $":{rank}\r\n" : "$-1\r\n";
+  }
+  else if (command == "ZRANGE")
+  {
+    string zKey = query[2];
+    if (!zsets.TryGetValue(zKey, out var zset))
+      return "*0\r\n";
+    int beg = int.Parse(query[3]);
+    int end = int.Parse(query[4]);
+    var members = zset.RangeByRank(beg, end).ToArray();
+    string res = string.Join("", members.Select(key => $"${key.Length}\r\n{key}\r\n"));
+    return $"*{members.Length}\r\n{res}";
+  }
+  else if (command == "ZCARD")
+  {
+    string zKey = query[2];
+    if (!zsets.TryGetValue(zKey, out var zset))
+      return ":0\r\n";
+    return $":{zset.Count}\r\n";
+  }
+  else if (command == "ZSCORE")
+  {
+    string zKey = query[2];
+    if (!zsets.TryGetValue(zKey, out var zset))
+      return "$-1\r\n";
+    double? score = zset.GetScore(query[3]);
+    return score == null ? "$-1\r\n" : $"${score?.ToString().Length}\r\n{score}\r\n";
+  }
+  else if (command == "ZREM")
+  {
+    string zKey = query[2];
+    if (!zsets.TryGetValue(zKey, out var zset))
+      return ":0\r\n";
+    return zset.Remove(query[3]) ? ":1\r\n" : ":0\r\n";
+  }
+
   return null;
 }
 
@@ -781,4 +837,94 @@ public readonly struct StreamID : IComparable<StreamID>
   public static bool operator >=(StreamID a, StreamID b) => a.CompareTo(b) >= 0;
   public static bool operator ==(StreamID a, StreamID b) => a.CompareTo(b) == 0;
   public static bool operator !=(StreamID a, StreamID b) => a.CompareTo(b) != 0;
+}
+
+
+public class SortedSet
+{
+  Dictionary<string, double> _dict = [];
+  SortedDictionary<double, HashSet<string>> _sorted = [];
+
+  public int Count => _dict.Count;
+  public void Add(string member, double score)
+  {
+    if (_dict.TryGetValue(member, out var oldScore))
+    {
+      _dict.Remove(member);
+      _sorted.Remove(oldScore);
+    }
+    _dict[member] = score;
+    if (!_sorted.TryGetValue(score, out var sorted))
+    {
+      sorted = [];
+      _sorted[score] = sorted;
+    }
+    sorted.Add(member);
+
+  }
+  public bool Remove(string member)
+  {
+    if (!_dict.TryGetValue(member, out var score))
+      return false;
+
+    _dict.Remove(member);
+    _sorted.Remove(score);
+    return true;
+  }
+  public int? GetRank(string member)
+  {
+    if (!_dict.TryGetValue(member, out var score))
+      return null;
+
+    int rank = 0;
+    foreach (var item in _sorted)
+    {
+      if (item.Key < score)
+        rank += item.Value.Count;
+      else if (item.Key == score)
+      {
+        var ordered = item.Value.OrderBy(e => e, StringComparer.Ordinal);
+        foreach (var mem in ordered)
+        {
+          if (mem == member)
+            return rank;
+          rank++;
+        }
+      }
+      else
+        break;
+    }
+    return rank;
+  }
+  public double? GetScore(string member) => _dict.TryGetValue(member, out var score) ? score : null;
+
+  public IEnumerable<string> RangeByRank(int beg, int end)
+  {
+    beg = beg < 0 ? _dict.Count + beg : beg;
+    end = end < 0 ? _dict.Count + end : end;
+    end = int.Min(end, _dict.Count);
+
+    int rank = 0;
+    foreach (var item in _sorted)
+    {
+      if (rank + item.Value.Count < beg)
+      {
+        rank += item.Value.Count;
+        continue;
+      }
+      var ordered = item.Value.OrderBy(x => x, StringComparer.Ordinal);
+      foreach (var v in ordered)
+      {
+        if (rank < beg)
+        {
+          rank++;
+          continue;
+        }
+        if (rank > end)
+          yield break;
+        yield return v;
+        rank++;
+      }
+    }
+  }
 }
